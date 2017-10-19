@@ -1,22 +1,26 @@
 # from __future__ import absolute_import
-from __future__ import print_function
 from __future__ import division
+from __future__ import print_function
 
-import numpy as np
+import argparse
 import json
 import os
-import argparse
-import cPickle as pickle
-
 from os import path
+
+import numpy as np
+from gensim.models import KeyedVectors
 from gensim.scripts.glove2word2vec import glove2word2vec
+from keras.preprocessing.sequence import pad_sequences
+from stanford_corenlp_pywrapper.sockwrap import CoreNLP
 from tqdm import tqdm
 from unidecode import unidecode
 
-from utils import CoreNLP_path, get_glove_file_path
-from stanford_corenlp_pywrapper import CoreNLP
-from gensim.models import KeyedVectors
-from keras.preprocessing.sequence import pad_sequences
+from utils import CoreNLP_path, get_glove_file_path, get_fasttext_model_path, FastText
+
+try:
+    import cPickle as pickle
+except ImportError:
+    import _pickle as pickle
 
 
 def CoreNLP_tokenizer():
@@ -34,6 +38,22 @@ def CoreNLP_tokenizer():
         return tokens, char_offsets
 
     return tokenize_context
+
+
+def initialize_fasttext(fasttext_lib_path, fasttext_model_path):
+
+    fasttext_model_path = get_fasttext_model_path(fasttext_model_path)
+    print('Loading fasttext model...')
+    model = FastText(fasttext_lib_directory=fasttext_lib_path, fasttext_model_path=fasttext_model_path)
+
+    def get_word_vector(word):
+        try:
+            return model[word]
+        except KeyError as e:
+            # print(e)
+            return np.zeros(model.vector_size)
+
+    return get_word_vector
 
 
 def word2vec(word2vec_path):
@@ -60,13 +80,17 @@ def word2vec(word2vec_path):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--word2vec_path', type=str,
-                        default='data/word2vec_from_glove_300.vec',
+    parser.add_argument('--word2vec_path', type=str, default='data/word2vec_from_glove_300.vec',
                         help='Word2Vec vectors file path')
+    parser.add_argument('--fasttext_lib_path', type=str,
+                        help='Path to fastText library')
+    parser.add_argument('--fasttext_model_path', type=str, default=None,
+                        help='Path to fastText model, if there is no such model, it will be downloaded automatically')
     parser.add_argument('--outfile', type=str, default='data/tmp.pkl',
                         help='Desired path to output pickle')
     parser.add_argument('--include_str', action='store_true',
-                        help='Include strings')
+                        help='Include string representation of words')
+
     parser.add_argument('data', type=str, help='Data json')
     args = parser.parse_args()
 
@@ -82,7 +106,14 @@ if __name__ == '__main__':
     tokenize = CoreNLP_tokenizer()
     print('Done!')
 
-    word_vector = word2vec(args.word2vec_path)
+    # Determine which model to use fasttext or word2vec (Glove)
+    if args.fasttext_lib_path is not None:
+        if not os.path.exists(args.fasttext_lib_path):
+            raise ValueError('There is no fasttext library installed at ' + args.fasttext_lib_path)
+        word_vector = initialize_fasttext(fasttext_lib_path=args.fasttext_lib_path,
+                                          fasttext_model_path=args.fasttext_model_path)
+    else:
+        word_vector = word2vec(word2vec_path=args.word2vec_path)
 
     def parse_sample(context, question, answer_start, answer_end, **kwargs):
         inputs = []
@@ -135,8 +166,7 @@ if __name__ == '__main__':
     def transpose(x):
         return map(list, zip(*x))
 
-    data = [transpose(input) for input in transpose(samples)]
-
+    data = [transpose(sample) for sample in transpose(samples)]
 
     print('Writing to file {}... '.format(args.outfile), end='')
     with open(args.outfile, 'wb') as fd:
